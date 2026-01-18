@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
-import { Shield, ArrowRight, Lock, Mail, RefreshCw, CheckCircle } from 'lucide-react';
+import { Shield, ArrowRight, Lock, Mail, RefreshCw, CheckCircle, Settings } from 'lucide-react';
 import { useEffect } from 'react';
 
 const features = [
@@ -50,10 +50,16 @@ const Index = () => {
             <span className="text-xl font-semibold">SecureAuth</span>
           </div>
 
-          <Button onClick={() => navigate('/auth')} variant="outline" className="group">
-            Get Started
-            <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button onClick={() => navigate('/admin/auth')} variant="ghost" size="sm" className="text-muted-foreground">
+              <Settings className="mr-2 h-4 w-4" />
+              Admin
+            </Button>
+            <Button onClick={() => navigate('/auth')} variant="outline" className="group">
+              Get Started
+              <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
+            </Button>
+          </div>
         </nav>
       </header>
 

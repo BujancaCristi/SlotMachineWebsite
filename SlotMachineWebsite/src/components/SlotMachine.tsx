@@ -4,6 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
+import { getGameSettings, saveGameSpin, canSpend, addTodaySpending, getRemainingAllowance, checkAchievements, ACHIEVEMENTS } from '@/lib/adminConfig';
+import { toast as sonnerToast } from 'sonner';
 import robuImg from '@/assets/robu.png';
 
 type Symbol = { type: 'emoji'; value: string } | { type: 'image'; src: string; alt: string };
@@ -15,11 +17,8 @@ const SYMBOLS: Symbol[] = [
   { type: 'emoji', value: '🔔' },
   { type: 'emoji', value: '⭐' },
   { type: 'emoji', value: '💎' },
-  { type: 'image', src: robuImg, alt: 'Robu' },
+  { type: 'emoji', value: '7' },
 ];
-const SPIN_COST = 10;
-const ROW_WIN_PRIZE = 50;
-const ROBU_PRIZE = 100;
 const COLS = 3;
 const ROWS = 1;
 
@@ -35,6 +34,12 @@ export const SlotMachine = () => {
   const [spinning, setSpinning] = useState(false);
   const [message, setMessage] = useState("Click SPIN to play!");
   const [loading, setLoading] = useState(true);
+  const [gameSettings, setGameSettings] = useState(getGameSettings());
+
+  useEffect(() => {
+    // Update game settings on mount
+    setGameSettings(getGameSettings());
+  }, []);
 
   const randomSymbol = (): Symbol => SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
 
@@ -91,37 +96,38 @@ export const SlotMachine = () => {
     }
   };
 
-  const isRobu = (s: Symbol): boolean => s.type === 'image';
+  const isRobu = (s: Symbol): boolean => s.type === 'emoji' && s.value === '7';
   
   const evaluateWin = (finalGrid: Symbol[][]): { prize: number; message: string } => {
-    let hasRobu = false;
-    
-    // Check for Robu anywhere
-    for (const row of finalGrid) {
-      for (const symbol of row) {
-        if (isRobu(symbol)) hasRobu = true;
-      }
-    }
-    
-    if (hasRobu) {
-      return { prize: ROBU_PRIZE, message: `🎉 ROBU BONUS! You won $${ROBU_PRIZE}!` };
-    }
-    
-    // Flatten grid and count symbols
+    // Flatten grid
     const allSymbols = finalGrid.flat();
-    const symbolCounts: Record<string, number> = {};
     
+    // Check for jackpot (three 7s)
+    if (allSymbols.every(s => isRobu(s))) {
+      const prize = gameSettings.spinCost * gameSettings.payouts.jackpot;
+      return { prize, message: `🎰 JACKPOT! Three 7s! You won $${prize}!` };
+    }
+    
+    // Count symbols
+    const symbolCounts: Record<string, number> = {};
     for (const symbol of allSymbols) {
       const key = getSymbolKey(symbol);
       symbolCounts[key] = (symbolCounts[key] || 0) + 1;
     }
     
-    // Check for 2 or 3 of a kind (excluding Robu)
+    // Check for three of a kind
     for (const [key, count] of Object.entries(symbolCounts)) {
-      if (count >= 2) {
-        const prize = count === 3 ? ROW_WIN_PRIZE * 2 : ROW_WIN_PRIZE;
-        const message = count === 3 ? `✨ 3 of a kind! You won $${prize}!` : `✨ 2 of a kind! You won $${prize}!`;
-        return { prize, message };
+      if (count === 3) {
+        const prize = gameSettings.spinCost * gameSettings.payouts.threeMatch;
+        return { prize, message: `✨ Three of a kind! You won $${prize}!` };
+      }
+    }
+    
+    // Check for two of a kind
+    for (const [key, count] of Object.entries(symbolCounts)) {
+      if (count === 2) {
+        const prize = gameSettings.spinCost * gameSettings.payouts.twoMatch;
+        return { prize, message: `✨ Two of a kind! You won $${prize}!` };
       }
     }
     
@@ -129,15 +135,32 @@ export const SlotMachine = () => {
   };
 
   const spin = async () => {
-    if (balance < SPIN_COST) {
+    if (!user) return;
+
+    if (balance < gameSettings.spinCost) {
       setMessage("Not enough money! Game Over!");
       return;
     }
 
+    // Check daily spending limit
+    if (!canSpend(user.id, gameSettings.spinCost)) {
+      const remaining = getRemainingAllowance(user.id);
+      setMessage(`Daily spending limit reached! Remaining: $${remaining.toFixed(2)}`);
+      toast({
+        title: "Daily Limit Reached",
+        description: `You've reached your daily spending limit. Remaining allowance: $${remaining.toFixed(2)}`,
+        variant: "destructive"
+      });
+      return;
+    }
+
     setSpinning(true);
-    const newBalance = balance - SPIN_COST;
+    const newBalance = balance - gameSettings.spinCost;
     setBalance(newBalance);
     setMessage("Spinning...");
+
+    // Add to today's spending
+    addTodaySpending(user.id, gameSettings.spinCost);
 
     let ticks = 0;
     const interval = setInterval(() => {
@@ -154,6 +177,32 @@ export const SlotMachine = () => {
         setBalance(finalBalance);
         setMessage(message);
         updateBalance(finalBalance);
+        
+        // Log spin to localStorage for analytics
+        if (user) {
+          const result = finalGrid[0].map(s => getSymbolKey(s));
+          saveGameSpin({
+            user_id: user.id,
+            spin_cost: gameSettings.spinCost,
+            win_amount: prize,
+            result,
+          });
+          
+          // Check for newly unlocked achievements
+          const newAchievements = checkAchievements(user.id);
+          if (newAchievements.length > 0) {
+            newAchievements.forEach(achievementId => {
+              const achievement = ACHIEVEMENTS.find(a => a.id === achievementId);
+              if (achievement) {
+                toast.success(`Achievement Unlocked! ${achievement.icon}`, {
+                  description: `${achievement.name}: ${achievement.description}`,
+                  duration: 5000,
+                });
+              }
+            });
+          }
+        }
+        
         setSpinning(false);
       }
     }, 100);
@@ -214,18 +263,19 @@ export const SlotMachine = () => {
         <div className="flex justify-center">
           <Button
             onClick={spin}
-            disabled={spinning || balance < SPIN_COST}
+            disabled={spinning || balance < gameSettings.spinCost}
             size="lg"
             className="px-12 py-6 text-xl font-bold bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white shadow-lg"
           >
-            {spinning ? "SPINNING..." : `SPIN ($${SPIN_COST})`}
+            {spinning ? "SPINNING..." : `SPIN ($${gameSettings.spinCost})`}
           </Button>
         </div>
 
         {/* Info */}
         <div className="text-center text-sm text-muted-foreground space-y-1">
-          <p><img src={robuImg} alt="Robu" className="inline w-5 h-5 rounded" /> = $100 Bonus!</p>
-          <p>Full row match = $50</p>
+          <p>7️⃣ 7️⃣ 7️⃣ = ${(gameSettings.spinCost * gameSettings.payouts.jackpot).toFixed(2)} Jackpot!</p>
+          <p>Three match = ${(gameSettings.spinCost * gameSettings.payouts.threeMatch).toFixed(2)}</p>
+          <p>Two match = ${(gameSettings.spinCost * gameSettings.payouts.twoMatch).toFixed(2)}</p>
         </div>
       </CardContent>
     </Card>
